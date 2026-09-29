@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SHOOT - Map: The Room</title>
+  <style>
+    body {
+      background-color: #0f0f11;
+      color: #e0e0e0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+    }
+    h1 {
+      margin-bottom: 12px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #d4af37; /* Mafia gold accent */
+    }
+    canvas {
+      border: 4px solid #333;
+      background-color: #1a1a1a;
+      box-shadow: 0px 10px 30px rgba(0, 0, 0, 0.8);
+      image-rendering: pixelated; /* Keeps pixel art crisp */
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Map 01: The Room</h1>
+  <canvas id="gameCanvas" width="1024" height="640"></canvas>
+
+  <!-- Load Player Class  -->
+  <script src="players.js"></script>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const TILE_SIZE = 32;
+    const COLS = canvas.width / TILE_SIZE; // 32 columns
+    const ROWS = canvas.height / TILE_SIZE; // 20 rows
+
+    // Map Matrix:
+    // 0 = Dark Marble Floor
+    // 1 = Outer Steel/Reinforced Wall
+    // 2 = Polish Mahogany Meeting Table
+    // 3 = Concrete Pillar
+    const mapTheRoom = [
+      [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,1],
+      [1,0,3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,0,1],
+      [1,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,1],
+      [1,0,3,3,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,3,3,0,0,1],
+      [1,0,0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3,0,0,0,1],
+      [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+      [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+    ];
+
+    // --- PROCEDURAL 32x32 PIXEL ART SPRITE  ---
+    function createTileTexture(type) {
+      const c = document.createElement('canvas');
+      c.width = 32;
+      c.height = 32;
+      const tCtx = c.getContext('2d');
+
+      if (type === 0) {
+        // Floor: Dark Marble Tile with Grout Line
+        tCtx.fillStyle = '#141418';
+        tCtx.fillRect(0, 0, 32, 32);
+        
+        // Inner tile highlight
+        tCtx.fillStyle = '#1b1b22';
+        tCtx.fillRect(2, 2, 28, 28);
+
+        // Subtle diagonal marble grain
+        tCtx.fillStyle = '#22222b';
+        tCtx.fillRect(6, 4, 18, 2);
+        tCtx.fillRect(10, 14, 14, 2);
+        tCtx.fillRect(4, 22, 12, 2);
+
+        // Dark Grout lines
+        tCtx.fillStyle = '#0a0a0d';
+        tCtx.fillRect(0, 31, 32, 1);
+        tCtx.fillRect(31, 0, 1, 32);
+      } 
+      else if (type === 1) {
+        // Outer Wall: Steel Plate with Gold Rivets
+        tCtx.fillStyle = '#1e1f24';
+        tCtx.fillRect(0, 0, 32, 32);
+
+        // Outer Bevel
+        tCtx.fillStyle = '#3a3d45';
+        tCtx.fillRect(1, 1, 30, 30);
+        tCtx.fillStyle = '#282a30';
+        tCtx.fillRect(3, 3, 26, 26);
+
+        // Center Panel
+        tCtx.fillStyle = '#1c1d22';
+        tCtx.fillRect(5, 5, 22, 22);
+
+        // Corner Rivets (Mafia Gold)
+        tCtx.fillStyle = '#d4af37';
+        tCtx.fillRect(3, 3, 2, 2);
+        tCtx.fillRect(27, 3, 2, 2);
+        tCtx.fillRect(3, 27, 2, 2);
+        tCtx.fillRect(27, 27, 2, 2);
+      } 
+      else if (type === 2) {
+        // Meeting Table: Polished Mahogany Wood Grain & Brass Trim
+        tCtx.fillStyle = '#4a1c03'; // Deep wood base
+        tCtx.fillRect(0, 0, 32, 32);
+
+        // Wood Planks Highlight
+        tCtx.fillStyle = '#6e2c00';
+        tCtx.fillRect(2, 2, 28, 28);
+
+        // Wood Grain Lines
+        tCtx.fillStyle = '#381300';
+        tCtx.fillRect(2, 8, 28, 2);
+        tCtx.fillRect(2, 18, 28, 2);
+        tCtx.fillRect(2, 26, 28, 2);
+
+        // Polished Light Reflection Line
+        tCtx.fillStyle = '#8a3a03';
+        tCtx.fillRect(4, 3, 24, 2);
+
+        // Brass Table Corner Bracket
+        tCtx.fillStyle = '#b89628';
+        tCtx.fillRect(0, 0, 4, 4);
+        tCtx.fillRect(28, 0, 4, 4);
+        tCtx.fillRect(0, 28, 4, 4);
+        tCtx.fillRect(28, 28, 4, 4);
+      } 
+      else if (type === 3) {
+        // Metallic Pillar: Clean Beveled Steel Block
+        tCtx.fillStyle = '#1c2026'; // Dark outer border
+        tCtx.fillRect(0, 0, 32, 32);
+
+        // Main metallic steel base
+        tCtx.fillStyle = '#525b68';
+        tCtx.fillRect(2, 2, 28, 28);
+
+        // Top & Left metallic sheen highlight
+        tCtx.fillStyle = '#94a2b3';
+        tCtx.fillRect(2, 2, 28, 2);
+        tCtx.fillRect(2, 2, 2, 28);
+
+        // Bottom & Right bevel shadow
+        tCtx.fillStyle = '#2c323b';
+        tCtx.fillRect(2, 28, 28, 2);
+        tCtx.fillRect(28, 2, 2, 28);
+
+        // Clean central metal plate inset
+        tCtx.fillStyle = '#414852';
+        tCtx.fillRect(6, 6, 20, 20);
+
+        // Corner steel bolts
+        tCtx.fillStyle = '#788596';
+        tCtx.fillRect(8, 8, 2, 2);
+        tCtx.fillRect(22, 8, 2, 2);
+        tCtx.fillRect(8, 22, 2, 2);
+        tCtx.fillRect(22, 22, 2, 2);
+      }
+
+      return c;
+    }
+
+    // Pre-render the 4 pixel sprites into memory
+    const tileSprites = {
+      0: createTileTexture(0),
+      1: createTileTexture(1),
+      2: createTileTexture(2),
+      3: createTileTexture(3)
+    };
+
+    function renderMap() {
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          const tile = mapTheRoom[r][c];
+          const sprite = tileSprites[tile] || tileSprites[0];
+
+          // Draw pixel sprite tile
+          ctx.drawImage(sprite, c * TILE_SIZE, r * TILE_SIZE);
+        }
+      }
+    }
+
+    // --- INITIALIZE PLAYER & START GAME LOOP ---
+    const player = new Player(15, 14);
+
+    function gameLoop() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      renderMap();        // Draws map & sprites
+      player.update();    // Updates player, bullet positions & timers
+      player.render(ctx); // Draws player, projectiles & HUD
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    // Start the continuous loop
+    gameLoop();
+  </script>
+</body>
+</html>
