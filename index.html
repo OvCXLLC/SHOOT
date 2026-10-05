@@ -31,25 +31,51 @@
 </head>
 <body>
 
-  <h1>Map 01: The Room</h1>
+  <h1 id="gameTitle">SHOOT</h1>
   <canvas id="gameCanvas" width="1024" height="640"></canvas>
 
-  <!-- Load Player Class  -->
+  <!-- External Script Modules -->
   <script src="players.js"></script>
+  <script src="gamelogic.js"></script>
+  <script src="statkeep.js"></script>
 
   <script>
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
+    const titleElement = document.getElementById('gameTitle');
 
     const TILE_SIZE = 32;
     const COLS = canvas.width / TILE_SIZE; // 32 columns
     const ROWS = canvas.height / TILE_SIZE; // 20 rows
+
+    // --- GAME STATE & START SCREEN ASSET ---
+    let gameState = 'START_SCREEN'; // 'START_SCREEN' or 'PLAYING'
+
+    const startScreenImg = new Image();
+    startScreenImg.src = 'Startscreen.png';
+
+    // Listen for 1 or 5 to start the game
+    window.addEventListener('keydown', (e) => {
+      if (gameState === 'START_SCREEN' && (e.key === '1' || e.code === '5' || e.key === '5')) {
+        gameState = 'PLAYING';
+        
+        // STATKEEP HOOK: Start round telemetry timer
+        if (typeof statKeeper !== 'undefined') {
+          statKeeper.startRound();
+        }
+
+        if (titleElement) {
+          titleElement.textContent = 'Map 01: The Room';
+        }
+      }
+    });
 
     // Map Matrix:
     // 0 = Dark Marble Floor
     // 1 = Outer Steel/Reinforced Wall
     // 2 = Polish Mahogany Meeting Table
     // 3 = Concrete Pillar
+    // 4 = Player-Placed Defensive Cover Block
     const mapTheRoom = [
       [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
       [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
@@ -73,7 +99,7 @@
       [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
     ];
 
-    // --- PROCEDURAL 32x32 PIXEL ART SPRITE  ---
+    // --- PROCEDURAL 32x32 PIXEL ART SPRITES ---
     function createTileTexture(type) {
       const c = document.createElement('canvas');
       c.width = 32;
@@ -178,16 +204,29 @@
         tCtx.fillRect(8, 22, 2, 2);
         tCtx.fillRect(22, 22, 2, 2);
       }
+      else if (type === 4) {
+        // Player-Placed Cover Block
+        tCtx.fillStyle = '#1c3d5a';
+        tCtx.fillRect(0, 0, 32, 32);
+
+        tCtx.fillStyle = '#2980b9';
+        tCtx.fillRect(2, 2, 28, 28);
+
+        tCtx.fillStyle = '#5dedff';
+        tCtx.fillRect(4, 4, 24, 2);
+        tCtx.fillRect(4, 4, 2, 24);
+      }
 
       return c;
     }
 
-    // Pre-render the 4 pixel sprites into memory
+    // Pre-render pixel sprites into memory
     const tileSprites = {
       0: createTileTexture(0),
       1: createTileTexture(1),
       2: createTileTexture(2),
-      3: createTileTexture(3)
+      3: createTileTexture(3),
+      4: createTileTexture(4)
     };
 
     function renderMap() {
@@ -202,20 +241,67 @@
       }
     }
 
-    // --- INITIALIZE PLAYER & START GAME LOOP ---
-    const player = new Player(15, 14);
+    // --- INITIALIZE PLAYERS ---
+    // Player 1 (WASD + Space + Left Shift + E + R)
+    const player1 = new Player(15, 14, {
+      playerNumber: 1,
+      spriteSrc: 'playersprite.png'
+    });
 
+    // Player 2 (Arrows + Enter + Right Control + M + K)
+    const player2 = new Player(5, 5, {
+      playerNumber: 2,
+      spriteSrc: 'player2sprite.png'
+    });
+
+    // --- MAIN GAME LOOP ---
     function gameLoop() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      renderMap();        // Draws map & sprites
-      player.update();    // Updates player, bullet positions & timers
-      player.render(ctx); // Draws player, projectiles & HUD
+      if (gameState === 'START_SCREEN') {
+        // Draw Start Screen image onto canvas
+        if (startScreenImg.complete && startScreenImg.naturalWidth !== 0) {
+          ctx.drawImage(startScreenImg, 0, 0, canvas.width, canvas.height);
+        } else {
+          // Fallback rendering while image is loading
+          ctx.fillStyle = '#0f0f11';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#d4af37';
+          ctx.font = '28px "Segoe UI", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('PRESS ENTER / SPACE TO START', canvas.width / 2, canvas.height / 2);
+        }
+      } else if (gameState === 'PLAYING') {
+        renderMap(); // Draws map & static tiles
+
+        // Update Players
+        player1.update();
+        player2.update();
+
+        // Check Combat Collisions & Win Condition
+        checkCollisions(); // <--- This triggers the hit detection in gamelogic.js
+
+        // Render Players
+        player1.render(ctx);
+        player2.render(ctx);
+
+        // Render Damage Flash Effect
+        renderHitFlash(ctx);
+        
+      } else if (gameState === 'GAME_OVER') {
+        // Keeps the map and players visible under the Game Over overlay
+        renderMap();
+        player1.render(ctx);
+        player2.render(ctx);
+        
+        // Displays the winner text and prompt to restart
+        renderGameOverOverlay(ctx);
+      }
 
       requestAnimationFrame(gameLoop);
     }
 
-    // Start the continuous loop
+    // Start continuous loop
     gameLoop();
   </script>
 </body>
