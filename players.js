@@ -1,11 +1,70 @@
-// --- PLAYER CLASS & LOGIC ---
+// --- GLOBAL DESTRUCTIBLE TILE TRACKER ---
+const tableHealthMap = {}; // Tracks HP for Mahogany Tables (Tile 2)
+
+function damageTable(row, col, damage) {
+  const key = `${row},${col}`;
+  if (tableHealthMap[key] === undefined) {
+    tableHealthMap[key] = 3; // Table starts with 3 HP
+  }
+
+  tableHealthMap[key] -= damage;
+
+  if (tableHealthMap[key] <= 0) {
+    mapTheRoom[row][col] = 0; // Destroy table and revert to empty floor
+    delete tableHealthMap[key];
+  }
+}
+
+// Global reference array to track all active players
+const allPlayers = [];
 
 class Player {
-  constructor(startCol, startRow) {
+  constructor(startCol, startRow, options = {}) {
     // Grid Coordinates & Facing Direction
     this.col = startCol;
     this.row = startRow;
     this.facing = 'DOWN'; // 'UP', 'DOWN', 'LEFT', 'RIGHT'
+
+    // Player Identification & HUD Layout
+    this.playerNumber = options.playerNumber || (allPlayers.length + 1);
+
+    // Configurable Key Controls (Defaults: Player 1 = WASD/Space/Shift/E/R, Player 2 = Arrows/Enter/Ctrl/M/K)
+    const isP2 = this.playerNumber === 2;
+    this.controls = options.controls || {
+      up: isP2 ? 'arrowup' : 'w',
+      down: isP2 ? 'arrowdown' : 's',
+      left: isP2 ? 'arrowleft' : 'a',
+      right: isP2 ? 'arrowright' : 'd',
+      shoot: isP2 ? 'Enter' : 'Space',
+      placeBlock: isP2 ? 'L' : 'Shift',
+      actionE: isP2 ? 'm' : 'e',
+      reload: isP2 ? 'k' : 'r'
+    };
+
+    // --- SPRITE SHEET INTEGRATION & TRANSPARENCY ---
+    this.sprite = new Image();
+    this.sprite.src = options.spriteSrc || (isP2 ? 'player2sprite.jpg' : 'playersprite.png');
+    this.transparentCanvas = null;
+
+    // Remove baked-in checkerboard background once image loads
+    this.sprite.onload = () => {
+      this.transparentCanvas = this.makeTransparent(this.sprite);
+    };
+
+    this.cols = 7; // 7 frames per row
+    this.rows = 4; // 4 directional rows
+    
+    // Directional Row Mappings for sprite sheet
+    // Row 0 = DOWN (Front-facing)
+    // Row 1 = UP (Back-facing)
+    // Row 2 = RIGHT
+    // Row 3 = LEFT
+    this.dirRows = {
+      'DOWN': 0,
+      'UP': 1,
+      'RIGHT': 2,
+      'LEFT': 3
+    };
 
     // Health (3 bars)
     this.health = 3;
@@ -23,10 +82,11 @@ class Player {
     this.throwMaxDistance = 3 * TILE_SIZE;   // 3 tiles max range
     this.throwSpeed = 5;                     // Slower speed for thrown weapon
 
-    // Active Objects
+    // Active Objects & Placed Blocks
     this.bullets = [];
     this.thrownWeapons = [];
     this.meleeSwing = null; // Temporary melee hit visual
+    this.placedBlocks = []; // Active player-placed blocks (Max 2)
 
     // Movement Repeat Timers (0.67s delay when held)
     this.moveDelay = 670; // 0.67 seconds in milliseconds
@@ -36,21 +96,65 @@ class Player {
     // Input States
     this.activeMoveKey = null;
 
+    allPlayers.push(this);
     this.setupControls();
+  }
+
+  // --- DAMAGE HELPER ---
+  takeDamage(amount = 1) {
+    this.health = Math.max(0, this.health - amount);
+  }
+
+  // Filter out background pixels for transparency
+  makeTransparent(img) {
+    const canvas = document.createElement('canvas');
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
+    canvas.width = width;
+    canvas.height = height;
+
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+
+    const imgData = ctx.getImageData(0, 0, width, height);
+    const data = imgData.data;
+
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+
+      const isGrayscale = Math.abs(r - g) <= 20 && Math.abs(g - b) <= 20;
+      const isBackgroundGrey = r >= 115;
+
+      if (isGrayscale && isBackgroundGrey) {
+        data[i + 3] = 0; // Transparent
+      }
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+    return canvas;
   }
 
   // --- INPUT EVENT LISTENERS ---
   setupControls() {
     window.addEventListener('keydown', (e) => {
       const key = e.key.toLowerCase();
+      const code = e.code;
 
-      // Handle WASD Movement
-      if (['w', 'a', 's', 'd'].includes(key)) {
+      const moveKeys = [
+        this.controls.up.toLowerCase(),
+        this.controls.down.toLowerCase(),
+        this.controls.left.toLowerCase(),
+        this.controls.right.toLowerCase()
+      ];
+
+      // Handle Movement
+      if (moveKeys.includes(key)) {
         if (this.activeMoveKey !== key) {
           this.activeMoveKey = key;
-          this.handleStep(key); // Step 1 tile immediately on initial press
+          this.handleStep(key);
 
-          // Clear previous timer and set repeat interval (0.67s)
           clearInterval(this.keyHeldTimers[key]);
           this.keyHeldTimers[key] = setInterval(() => {
             if (this.activeMoveKey === key) {
@@ -60,32 +164,39 @@ class Player {
         }
       }
 
-      // Action: Spacebar -> Shoot Bullet
-      if (e.code === 'Space') {
+      // Shoot Bullet
+      if (key === this.controls.shoot.toLowerCase() || code === this.controls.shoot) {
         e.preventDefault();
         this.shoot();
       }
 
-      // Action: Left Shift -> Place Block
-      if (e.key === 'Shift') {
+      // Place Block
+      if (key === this.controls.placeBlock.toLowerCase() || e.key === this.controls.placeBlock) {
         e.preventDefault();
         this.placeBlock();
       }
 
-      // Action: E Key -> Melee Attack or Weapon Throw
-      if (key === 'e') {
+      // Melee Attack or Weapon Throw
+      if (key === this.controls.actionE.toLowerCase()) {
         this.handleEAction();
       }
 
-      // Action: R Key -> Reload Manual
-      if (key === 'r') {
+      // Reload
+      if (key === this.controls.reload.toLowerCase()) {
         this.reload();
       }
     });
 
     window.addEventListener('keyup', (e) => {
       const key = e.key.toLowerCase();
-      if (['w', 'a', 's', 'd'].includes(key)) {
+      const moveKeys = [
+        this.controls.up.toLowerCase(),
+        this.controls.down.toLowerCase(),
+        this.controls.left.toLowerCase(),
+        this.controls.right.toLowerCase()
+      ];
+
+      if (moveKeys.includes(key)) {
         clearInterval(this.keyHeldTimers[key]);
         if (this.activeMoveKey === key) {
           this.activeMoveKey = null;
@@ -99,21 +210,21 @@ class Player {
     let targetCol = this.col;
     let targetRow = this.row;
 
-    if (key === 'w') {
+    const k = key.toLowerCase();
+    if (k === this.controls.up.toLowerCase()) {
       this.facing = 'UP';
       targetRow--;
-    } else if (key === 's') {
+    } else if (k === this.controls.down.toLowerCase()) {
       this.facing = 'DOWN';
       targetRow++;
-    } else if (key === 'a') {
+    } else if (k === this.controls.left.toLowerCase()) {
       this.facing = 'LEFT';
       targetCol--;
-    } else if (key === 'd') {
+    } else if (k === this.controls.right.toLowerCase()) {
       this.facing = 'RIGHT';
       targetCol++;
     }
 
-    // Check map collision before stepping
     if (this.isWalkable(targetCol, targetRow)) {
       this.col = targetCol;
       this.row = targetRow;
@@ -121,13 +232,10 @@ class Player {
   }
 
   isWalkable(col, row) {
-    // Bounds check
     if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return false;
-    // Map tile check (0 = Walkable Floor)
-    return mapTheRoom[row][col] === 0;
+    return mapTheRoom[row][col] === 0; // Floor tile
   }
 
-  // --- GET TARGET TILE IN FACING DIRECTION ---
   getFrontTile() {
     let frontCol = this.col;
     let frontRow = this.row;
@@ -140,24 +248,48 @@ class Player {
     return { col: frontCol, row: frontRow };
   }
 
-  // --- BLOCK PLACEMENT (LEFT SHIFT) ---
   placeBlock() {
     const front = this.getFrontTile();
 
-    // Can only place block on empty walkable floor (0)
     if (
       front.col >= 0 && front.col < COLS &&
       front.row >= 0 && front.row < ROWS &&
       mapTheRoom[front.row][front.col] === 0
     ) {
-      // Place concrete/wooden barricade block (Tile 3)
-      mapTheRoom[front.row][front.col] = 3;
+      if (this.placedBlocks.length >= 2) {
+        const oldest = this.placedBlocks.shift();
+        mapTheRoom[oldest.r][oldest.c] = 0;
+      }
+
+      mapTheRoom[front.row][front.col] = 4;
+      this.placedBlocks.push({
+        r: front.row,
+        c: front.col,
+        hp: 3,
+        createdAt: Date.now(),
+        duration: 5000
+      });
+
+      // --- STEP 2 HOOK: RECORD BLOCK PLACED ---
+      if (typeof statKeeper !== 'undefined' && statKeeper) {
+  statKeeper.logBlockPlaced(this.playerNumber);
+      }
     }
   }
 
-  // --- SHOOTING (SPACEBAR) ---
+  updateBlocks() {
+    const now = Date.now();
+    for (let i = this.placedBlocks.length - 1; i >= 0; i--) {
+      const block = this.placedBlocks[i];
+      if (now - block.createdAt >= block.duration || block.hp <= 0) {
+        mapTheRoom[block.r][block.c] = 0;
+        this.placedBlocks.splice(i, 1);
+      }
+    }
+  }
+
   shoot() {
-    if (this.isWeaponThrown) return; // Cannot shoot if gun was thrown
+    if (this.isWeaponThrown) return;
 
     if (this.clipAmmo > 0) {
       this.clipAmmo--;
@@ -170,13 +302,16 @@ class Player {
         y: startY,
         startX: startX,
         startY: startY,
-        facing: this.facing,
-        distanceTraveled: 0
+        facing: this.facing
       });
+
+      // --- STEP 2 HOOK: RECORD SHOT FIRED ---
+      if (window.statKeeper) {
+        statKeeper.logShot(this.playerNumber);
+      }
     }
   }
 
-  // --- RELOAD (R KEY) ---
   reload() {
     if (this.reserveClips > 0 && this.clipAmmo < this.maxClipAmmo) {
       this.reserveClips--;
@@ -184,16 +319,12 @@ class Player {
     }
   }
 
-  // --- CONTEXTUAL E ACTION (MELEE OR WEAPON THROW) ---
   handleEAction() {
     if (this.isWeaponThrown) return;
 
-    // Case 1: Completely out of ammo (clip = 0 AND clips = 0) -> Throw Weapon
     if (this.clipAmmo === 0 && this.reserveClips === 0) {
       this.throwWeapon();
-    }
-    // Case 2: Clip is empty (0 ammo in current magazine) -> Melee Attack
-    else if (this.clipAmmo === 0) {
+    } else if (this.clipAmmo === 0) {
       this.performMelee();
     }
   }
@@ -203,8 +334,16 @@ class Player {
     this.meleeSwing = {
       col: front.col,
       row: front.row,
-      timer: 10 // Frames to render slash
+      timer: 10
     };
+
+    if (front.row >= 0 && front.row < ROWS && front.col >= 0 && front.col < COLS) {
+      const targetTile = mapTheRoom[front.row][front.col];
+      
+      if (targetTile === 2) {
+        damageTable(front.row, front.col, 1.5);
+      }
+    }
   }
 
   throwWeapon() {
@@ -217,14 +356,13 @@ class Player {
       y: startY,
       startX: startX,
       startY: startY,
-      facing: this.facing,
-      distanceTraveled: 0
+      facing: this.facing
     });
   }
 
-  // --- UPDATE BULLETS & PROJECTILES ---
   update() {
-    // Update Bullets
+    this.updateBlocks();
+
     for (let i = this.bullets.length - 1; i >= 0; i--) {
       const b = this.bullets[i];
 
@@ -234,23 +372,37 @@ class Player {
       if (b.facing === 'RIGHT') b.x += this.bulletSpeed;
 
       const currentDist = Math.hypot(b.x - b.startX, b.y - b.startY);
-
-      // Grid collision check
       const gridCol = Math.floor(b.x / TILE_SIZE);
       const gridRow = Math.floor(b.y / TILE_SIZE);
 
-      const hitWall =
-        gridCol < 0 || gridCol >= COLS ||
-        gridRow < 0 || gridRow >= ROWS ||
-        mapTheRoom[gridRow][gridCol] !== 0;
+      const isOutOfBounds = gridCol < 0 || gridCol >= COLS || gridRow < 0 || gridRow >= ROWS;
 
-      // Remove bullet if range reached (6 tiles) or hit wall
-      if (currentDist >= this.bulletMaxDistance || hitWall) {
+      if (isOutOfBounds) {
+        this.bullets.splice(i, 1);
+        continue;
+      }
+
+      const hitTile = mapTheRoom[gridRow][gridCol];
+
+      if (hitTile !== 0) {
+        if (hitTile === 2) {
+          damageTable(gridRow, gridCol, 1);
+        } else if (hitTile === 4) {
+          allPlayers.forEach(p => {
+            const blk = p.placedBlocks.find(b => b.r === gridRow && b.c === gridCol);
+            if (blk) blk.hp -= 1;
+          });
+        }
+
+        this.bullets.splice(i, 1);
+        continue;
+      }
+
+      if (currentDist >= this.bulletMaxDistance) {
         this.bullets.splice(i, 1);
       }
     }
 
-    // Update Thrown Weapons
     for (let i = this.thrownWeapons.length - 1; i >= 0; i--) {
       const w = this.thrownWeapons[i];
 
@@ -260,7 +412,6 @@ class Player {
       if (w.facing === 'RIGHT') w.x += this.throwSpeed;
 
       const currentDist = Math.hypot(w.x - w.startX, w.y - w.startY);
-
       const gridCol = Math.floor(w.x / TILE_SIZE);
       const gridRow = Math.floor(w.y / TILE_SIZE);
 
@@ -269,13 +420,11 @@ class Player {
         gridRow < 0 || gridRow >= ROWS ||
         mapTheRoom[gridRow][gridCol] !== 0;
 
-      // Remove thrown weapon if range reached (3 tiles) or hit wall
       if (currentDist >= this.throwMaxDistance || hitWall) {
         this.thrownWeapons.splice(i, 1);
       }
     }
 
-    // Decrement melee animation timer
     if (this.meleeSwing) {
       this.meleeSwing.timer--;
       if (this.meleeSwing.timer <= 0) {
@@ -284,48 +433,47 @@ class Player {
     }
   }
 
-  // --- RENDER PLAYER, HUD & PROJECTILES ---
   render(ctx) {
     const px = this.col * TILE_SIZE;
     const py = this.row * TILE_SIZE;
 
-    // 1. Draw Player Block (Placeholder Mafia Navy Blue Body)
-    ctx.fillStyle = '#1c3144';
-    ctx.fillRect(px + 2, py + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+    const spriteToDraw = this.transparentCanvas || (this.sprite.complete && this.sprite.naturalWidth !== 0 ? this.sprite : null);
 
-    // Block Border
-    ctx.strokeStyle = '#d4af37'; // Gold Accent
-    ctx.lineWidth = 2;
-    ctx.strokeRect(px + 2, py + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+    // 1. Draw Player Sprite
+    if (!spriteToDraw) {
+      ctx.fillStyle = this.playerNumber === 1 ? '#1c3144' : '#4a1c1c';
+      ctx.fillRect(px + 2, py + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+      ctx.strokeStyle = '#d4af37';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(px + 2, py + 2, TILE_SIZE - 4, TILE_SIZE - 4);
+    } else {
+      const frameWidth = spriteToDraw.width / this.cols;
+      const frameHeight = spriteToDraw.height / this.rows;
 
-    // 2. Draw Directional Arrow (Facing Indicator)
-    ctx.fillStyle = '#ff4d4d';
-    ctx.beginPath();
+      let frameCol = 0; // Default standing frame for all directions
 
-    const centerX = px + TILE_SIZE / 2;
-    const centerY = py + TILE_SIZE / 2;
+      if (this.meleeSwing) {
+        frameCol = 6; // Melee / throw frame
+      } else if (this.bullets.length > 0) {
+        frameCol = 3; // Firing frame
+      }
 
-    if (this.facing === 'UP') {
-      ctx.moveTo(centerX, py + 4);
-      ctx.lineTo(centerX - 6, py + 14);
-      ctx.lineTo(centerX + 6, py + 14);
-    } else if (this.facing === 'DOWN') {
-      ctx.moveTo(centerX, py + TILE_SIZE - 4);
-      ctx.lineTo(centerX - 6, py + TILE_SIZE - 14);
-      ctx.lineTo(centerX + 6, py + TILE_SIZE - 14);
-    } else if (this.facing === 'LEFT') {
-      ctx.moveTo(px + 4, centerY);
-      ctx.lineTo(px + 14, centerY - 6);
-      ctx.lineTo(px + 14, centerY + 6);
-    } else if (this.facing === 'RIGHT') {
-      ctx.moveTo(px + TILE_SIZE - 4, centerY);
-      ctx.lineTo(px + TILE_SIZE - 14, centerY - 6);
-      ctx.lineTo(px + TILE_SIZE - 14, centerY + 6);
+      const padX = 6;
+      const padY = 4;
+
+      const sx = frameCol * frameWidth + padX;
+      const sy = this.dirRows[this.facing] * frameHeight + padY;
+      const sw = frameWidth - (padX * 2);
+      const sh = frameHeight - (padY * 2);
+
+      ctx.drawImage(
+        spriteToDraw,
+        sx, sy, sw, sh,
+        px - 2, py, TILE_SIZE, TILE_SIZE
+      );
     }
-    ctx.closePath();
-    ctx.fill();
 
-    // 3. Draw Bullets
+    // 2. Bullets
     ctx.fillStyle = '#ffcc00';
     for (const b of this.bullets) {
       ctx.beginPath();
@@ -333,13 +481,13 @@ class Player {
       ctx.fill();
     }
 
-    // 4. Draw Thrown Weapon
+    // 3. Thrown Weapon
     ctx.fillStyle = '#aaaaaa';
     for (const w of this.thrownWeapons) {
       ctx.fillRect(w.x - 6, w.y - 6, 12, 12);
     }
 
-    // 5. Draw Melee Visual Slash
+    // 4. Melee Slash
     if (this.meleeSwing) {
       ctx.strokeStyle = '#ff3333';
       ctx.lineWidth = 4;
@@ -351,33 +499,43 @@ class Player {
       );
     }
 
-    // 6. Draw HUD (Health Bars & Ammo Status)
+    // 5. Draw HUD
     this.renderHUD(ctx);
   }
 
   renderHUD(ctx) {
-    // Health Bars (Top Left)
+    const isP1 = this.playerNumber === 1;
+
+    // Position Player 1 HUD on the left, Player 2 HUD on the right
+    const healthX = isP1 ? 12 : canvas.width - 150;
+    const textX = isP1 ? 300 : canvas.width - 300;
+
+    // Health Bars
     ctx.fillStyle = '#111';
-    ctx.fillRect(10, 10, 110, 24);
+    ctx.fillRect(healthX, 4, 110, 20);
     ctx.strokeStyle = '#333';
-    ctx.strokeRect(10, 10, 110, 24);
+    ctx.strokeRect(healthX, 4, 110, 20);
 
     for (let i = 0; i < this.maxHealth; i++) {
-      ctx.fillStyle = i < this.health ? '#2ecc71' : '#555';
-      ctx.fillRect(14 + i * 34, 14, 30, 16);
+      ctx.fillStyle = i < this.health ? (isP1 ? '#2ecc71' : '#e74c3c') : '#555';
+      ctx.fillRect(healthX + 4 + i * 34, 8, 28, 12);
     }
 
-    // Ammo Status Text (Top Right)
-    ctx.font = 'bold 14px "Segoe UI", sans-serif';
+    // Ammo Status Text
+    ctx.font = 'bold 12px "Segoe UI", sans-serif';
     ctx.fillStyle = '#d4af37';
-    let ammoText = `AMMO: ${this.clipAmmo}/${this.maxClipAmmo} | CLIPS: ${this.reserveClips}`;
+
+    let actionHint = isP1 ? 'E TO THROW / R TO RELOAD' : 'M TO THROW / K TO RELOAD';
+    let ammoText = `P${this.playerNumber} AMMO: ${this.clipAmmo}/${this.maxClipAmmo} | CLIPS: ${this.reserveClips}`;
+
     if (this.isWeaponThrown) {
-      ammoText = 'WEAPON THROWN (NO GUN)';
+      ammoText = `P${this.playerNumber}: WEAPON THROWN`;
     } else if (this.clipAmmo === 0 && this.reserveClips === 0) {
-      ammoText = 'OUT OF AMMO [E TO THROW]';
+      ammoText = `P${this.playerNumber}: OUT OF AMMO [${isP1 ? 'E' : 'M'} TO THROW]`;
     } else if (this.clipAmmo === 0) {
-      ammoText = 'EMPTY CLIP [R TO RELOAD / E FOR MELEE]';
+      ammoText = `P${this.playerNumber}: EMPTY CLIP [${isP1 ? 'R' : 'K'} TO RELOAD]`;
     }
-    ctx.fillText(ammoText, canvas.width - 380, 26);
+
+    ctx.fillText(ammoText, textX, 18);
   }
 }
