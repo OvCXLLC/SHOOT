@@ -60,6 +60,17 @@ class StatKeep {
     return parseFloat(((p.shotsHit / p.shotsFired) * 100).toFixed(1));
   }
 
+  // Rolling-memory snapshot consumed by AIEngine.recordMatch() (accuracy is a 0-1 decimal)
+  getSummaryStats(playerNumber = 1) {
+    const p = this.playerStats[playerNumber];
+    if (!p) return {};
+    return {
+      accuracy: p.shotsFired > 0 ? p.shotsHit / p.shotsFired : 0,
+      blocksPlaced: p.blocksPlaced,
+      survivalTime: this.roundDuration
+    };
+  }
+
   endRound(winnerNumber) {
     if (this.endTime) return; // Prevent duplicate triggers
     this.endTime = Date.now();
@@ -201,3 +212,81 @@ class StatKeep {
 // Global Telemetry Instance
 const statKeeper = new StatKeep();
 window.statKeeper = statKeeper; // Attach explicitly to window context
+// ==========================================
+// STATKEEP.JS - RADAR VISUALIZATION & ADVICE
+// ==========================================
+
+// Add Radar Chart & Tactical Recommendation Renderers to statkeep.js[cite: 2, 3]
+StatKeep.prototype.renderRadarChart = function(ctx, centerX, centerY, radius, stats) {
+  const metrics = [
+    { label: 'ACCURACY', val: Math.min(1.0, stats.accuracy / 100) },
+    { label: 'BLOCKS', val: Math.min(1.0, stats.blocksPlaced / 8) },
+    { label: 'SURVIVAL', val: Math.min(1.0, stats.survivalTime / 60) },
+    { label: 'DAMAGE', val: Math.min(1.0, (stats.shotsHit * 20) / 100) }
+  ];
+
+  const totalAxes = metrics.length;
+  const angleStep = (Math.PI * 2) / totalAxes;
+
+  ctx.save();
+  
+  // 1. Draw Spider Web Grid Lines
+  ctx.strokeStyle = '#444444';
+  ctx.lineWidth = 1;
+  for (let level = 1; level <= 4; level++) {
+    const r = (radius / 4) * level;
+    ctx.beginPath();
+    for (let i = 0; i < totalAxes; i++) {
+      const angle = i * angleStep - Math.PI / 2;
+      const x = centerX + r * Math.cos(angle);
+      const y = centerY + r * Math.sin(angle);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+  }
+
+  // 2. Draw Vector Data Polygon
+  ctx.beginPath();
+  ctx.fillStyle = 'rgba(46, 204, 113, 0.35)';
+  ctx.strokeStyle = '#2ecc71';
+  ctx.lineWidth = 2;
+
+  metrics.forEach((m, i) => {
+    const angle = i * angleStep - Math.PI / 2;
+    const r = radius * m.val;
+    const x = centerX + r * Math.cos(angle);
+    const y = centerY + r * Math.sin(angle);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // 3. Render Axis Labels
+  ctx.fillStyle = '#d4af37';
+  ctx.font = 'bold 11px "Segoe UI", sans-serif';
+  ctx.textAlign = 'center';
+  metrics.forEach((m, i) => {
+    const angle = i * angleStep - Math.PI / 2;
+    const x = centerX + (radius + 18) * Math.cos(angle);
+    const y = centerY + (radius + 14) * Math.sin(angle);
+    ctx.fillText(m.label, x, y);
+  });
+
+  ctx.restore();
+};
+
+// Tactical Strategy Recommendation Engine[cite: 3]
+StatKeep.prototype.getRecommendation = function(p1Stats) {
+  if (p1Stats.accuracyPercent < 30) {
+    return "TACTICAL ADVICE: Low accuracy detected. Hold fire until enemy steps into clear corridor lines.";
+  } else if (p1Stats.blocksPlaced < 2) {
+    return "TACTICAL ADVICE: Low cover deployment. Use [ Left Shift ] to drop concrete walls during gunfights.";
+  } else if (p1Stats.accuracyPercent > 60 && p1Stats.blocksPlaced >= 3) {
+    return "TACTICAL ADVICE: Dominant performance! Vector profile classified as Elite Sharpshooter / Defender.";
+  }
+  return "TACTICAL ADVICE: Balanced playstyle. Focus on controlling center pillar choke points.";
+};
