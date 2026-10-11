@@ -28,42 +28,44 @@ class Player {
     // Player Identification & HUD Layout
     this.playerNumber = options.playerNumber || (allPlayers.length + 1);
 
-    // Configurable Key Controls (Defaults: Player 1 = WASD/Space/Shift/E/R, Player 2 = Arrows/Enter/Ctrl/M/K)
+    // Configurable Key Controls (Defaults: Player 1 = WASD/Space/Shift/E/R, Player 2 = Arrows/Enter/L/M/K)
     const isP2 = this.playerNumber === 2;
     this.controls = options.controls || {
       up: isP2 ? 'arrowup' : 'w',
       down: isP2 ? 'arrowdown' : 's',
       left: isP2 ? 'arrowleft' : 'a',
       right: isP2 ? 'arrowright' : 'd',
-      shoot: isP2 ? 'Enter' : 'Space',
-      placeBlock: isP2 ? 'L' : 'Shift',
+      shoot: isP2 ? 'enter' : 'space',
+      placeBlock: isP2 ? 'l' : 'shift',
       actionE: isP2 ? 'm' : 'e',
       reload: isP2 ? 'k' : 'r'
     };
 
     // --- SPRITE SHEET INTEGRATION & TRANSPARENCY ---
     this.sprite = new Image();
-    this.sprite.src = options.spriteSrc || (isP2 ? 'player2sprite.jpg' : 'playersprite.png');
+    this.sprite.src = options.spriteSrc || (isP2 ? 'player2sprite.png' : 'playersprite.png');
     this.transparentCanvas = null;
 
-    // Remove baked-in checkerboard background once image loads
+    // Remove baked-in background once image loads
     this.sprite.onload = () => {
-      this.transparentCanvas = this.makeTransparent(this.sprite);
+      try {
+        this.transparentCanvas = this.makeTransparent(this.sprite);
+      } catch (err) {
+        // e.g. opened via file:// (canvas is "tainted"); fall back to drawing the raw sheet
+        console.warn('Sprite transparency skipped:', err.message);
+        this.transparentCanvas = null;
+      }
     };
 
     this.cols = 7; // 7 frames per row
     this.rows = 4; // 4 directional rows
     
     // Directional Row Mappings for sprite sheet
-    // Row 0 = DOWN (Front-facing)
-    // Row 1 = UP (Back-facing)
-    // Row 2 = RIGHT
-    // Row 3 = LEFT
     this.dirRows = {
       'DOWN': 0,
       'UP': 1,
-      'RIGHT': 2,
-      'LEFT': 3
+      'RIGHT': 3,   // side-facing row, mirrored in render()
+      'LEFT': 3     // side-facing row (naturally left-facing)
     };
 
     // Health (3 bars)
@@ -77,7 +79,7 @@ class Player {
     this.isWeaponThrown = false; // True when gun has been thrown
 
     // Projectile Range & Speeds
-    this.bulletMaxDistance = 6 * TILE_SIZE;  // 6 tiles max range
+    this.bulletMaxDistance = 8 * TILE_SIZE;  // 8 tiles max range
     this.bulletSpeed = 12;                   // Medium-fast bullet speed
     this.throwMaxDistance = 3 * TILE_SIZE;   // 3 tiles max range
     this.throwSpeed = 5;                     // Slower speed for thrown weapon
@@ -119,6 +121,9 @@ class Player {
     const imgData = ctx.getImageData(0, 0, width, height);
     const data = imgData.data;
 
+    // Sheet already has real transparency (corner pixel is clear) -> use it as-is
+    if (data[3] === 0) return img;
+
     for (let i = 0; i < data.length; i += 4) {
       const r = data[i];
       const g = data[i + 1];
@@ -139,6 +144,14 @@ class Player {
   // --- INPUT EVENT LISTENERS ---
   setupControls() {
     window.addEventListener('keydown', (e) => {
+      // 1. Ignore input if game is not active
+      if (typeof gameState !== 'undefined' && gameState !== 'PLAYING') return;
+
+      // 2. AI OVERRIDE: Block keyboard control for Player 2 during VS AI mode
+      if (this.playerNumber === 2 && typeof gameMode !== 'undefined' && gameMode === 'VS_AI') {
+        return;
+      }
+
       const key = e.key.toLowerCase();
       const code = e.code;
 
@@ -157,7 +170,7 @@ class Player {
 
           clearInterval(this.keyHeldTimers[key]);
           this.keyHeldTimers[key] = setInterval(() => {
-            if (this.activeMoveKey === key) {
+            if (this.activeMoveKey === key && (typeof gameState === 'undefined' || gameState === 'PLAYING')) {
               this.handleStep(key);
             }
           }, this.moveDelay);
@@ -165,7 +178,8 @@ class Player {
       }
 
       // Shoot Bullet
-      if (key === this.controls.shoot.toLowerCase() || code === this.controls.shoot) {
+      const shootCtl = this.controls.shoot.toLowerCase();
+      if (key === shootCtl || code.toLowerCase() === shootCtl || (shootCtl === 'space' && key === ' ')) {
         e.preventDefault();
         this.shoot();
       }
@@ -188,6 +202,9 @@ class Player {
     });
 
     window.addEventListener('keyup', (e) => {
+      // Always release held keys (even when paused); only skip Player 2 in VS AI mode
+      if (this.playerNumber === 2 && typeof gameMode !== 'undefined' && gameMode === 'VS_AI') return;
+
       const key = e.key.toLowerCase();
       const moveKeys = [
         this.controls.up.toLowerCase(),
@@ -207,33 +224,35 @@ class Player {
 
   // --- TILE MOVEMENT & COLLISION ---
   handleStep(key) {
+    const k = key.toLowerCase();
+    if (k === this.controls.up.toLowerCase()) this.move('UP');
+    else if (k === this.controls.down.toLowerCase()) this.move('DOWN');
+    else if (k === this.controls.left.toLowerCase()) this.move('LEFT');
+    else if (k === this.controls.right.toLowerCase()) this.move('RIGHT');
+  }
+
+  // Direct Movement Method (Used by both human inputs & AI Engine)
+  move(direction, gridMap = typeof mapTheRoom !== 'undefined' ? mapTheRoom : null) {
     let targetCol = this.col;
     let targetRow = this.row;
 
-    const k = key.toLowerCase();
-    if (k === this.controls.up.toLowerCase()) {
-      this.facing = 'UP';
-      targetRow--;
-    } else if (k === this.controls.down.toLowerCase()) {
-      this.facing = 'DOWN';
-      targetRow++;
-    } else if (k === this.controls.left.toLowerCase()) {
-      this.facing = 'LEFT';
-      targetCol--;
-    } else if (k === this.controls.right.toLowerCase()) {
-      this.facing = 'RIGHT';
-      targetCol++;
-    }
+    this.facing = direction;
 
-    if (this.isWalkable(targetCol, targetRow)) {
+    if (direction === 'UP') targetRow--;
+    else if (direction === 'DOWN') targetRow++;
+    else if (direction === 'LEFT') targetCol--;
+    else if (direction === 'RIGHT') targetCol++;
+
+    if (this.isWalkable(targetCol, targetRow, gridMap)) {
       this.col = targetCol;
       this.row = targetRow;
     }
   }
 
-  isWalkable(col, row) {
+  isWalkable(col, row, gridMap = typeof mapTheRoom !== 'undefined' ? mapTheRoom : null) {
     if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return false;
-    return mapTheRoom[row][col] === 0; // Floor tile
+    const map = gridMap || mapTheRoom;
+    return map && map[row][col] === 0; // Floor tile
   }
 
   getFrontTile() {
@@ -270,9 +289,8 @@ class Player {
         duration: 5000
       });
 
-      // --- STEP 2 HOOK: RECORD BLOCK PLACED ---
       if (typeof statKeeper !== 'undefined' && statKeeper) {
-  statKeeper.logBlockPlaced(this.playerNumber);
+        statKeeper.logBlockPlaced(this.playerNumber);
       }
     }
   }
@@ -305,8 +323,7 @@ class Player {
         facing: this.facing
       });
 
-      // --- STEP 2 HOOK: RECORD SHOT FIRED ---
-      if (window.statKeeper) {
+      if (typeof statKeeper !== 'undefined' && statKeeper) {
         statKeeper.logShot(this.playerNumber);
       }
     }
@@ -317,6 +334,11 @@ class Player {
       this.reserveClips--;
       this.clipAmmo = this.maxClipAmmo;
     }
+  }
+
+  // Alias helper method for AI compatibility
+  performMeleeOrThrow() {
+    this.handleEAction();
   }
 
   handleEAction() {
@@ -450,7 +472,7 @@ class Player {
       const frameWidth = spriteToDraw.width / this.cols;
       const frameHeight = spriteToDraw.height / this.rows;
 
-      let frameCol = 0; // Default standing frame for all directions
+      let frameCol = 0; // Default standing frame
 
       if (this.meleeSwing) {
         frameCol = 6; // Melee / throw frame
@@ -466,11 +488,20 @@ class Player {
       const sw = frameWidth - (padX * 2);
       const sh = frameHeight - (padY * 2);
 
-      ctx.drawImage(
-        spriteToDraw,
-        sx, sy, sw, sh,
-        px - 2, py, TILE_SIZE, TILE_SIZE
-      );
+      // SWAPPED: Mirror the canvas when facing RIGHT instead of LEFT
+      if (this.facing === 'RIGHT') {
+        ctx.save();
+        ctx.translate(px - 2 + TILE_SIZE, py);
+        ctx.scale(-1, 1);
+        ctx.drawImage(spriteToDraw, sx, sy, sw, sh, 0, 0, TILE_SIZE, TILE_SIZE);
+        ctx.restore();
+      } else {
+        ctx.drawImage(
+          spriteToDraw,
+          sx, sy, sw, sh,
+          px - 2, py, TILE_SIZE, TILE_SIZE
+        );
+      }
     }
 
     // 2. Bullets
@@ -506,7 +537,7 @@ class Player {
   renderHUD(ctx) {
     const isP1 = this.playerNumber === 1;
 
-    // Position Player 1 HUD on the left, Player 2 HUD on the right
+    // Position Player 1 HUD on left, Player 2 HUD on right
     const healthX = isP1 ? 12 : canvas.width - 150;
     const textX = isP1 ? 300 : canvas.width - 300;
 
@@ -524,8 +555,8 @@ class Player {
     // Ammo Status Text
     ctx.font = 'bold 12px "Segoe UI", sans-serif';
     ctx.fillStyle = '#d4af37';
+    ctx.textAlign = 'center';
 
-    let actionHint = isP1 ? 'E TO THROW / R TO RELOAD' : 'M TO THROW / K TO RELOAD';
     let ammoText = `P${this.playerNumber} AMMO: ${this.clipAmmo}/${this.maxClipAmmo} | CLIPS: ${this.reserveClips}`;
 
     if (this.isWeaponThrown) {
