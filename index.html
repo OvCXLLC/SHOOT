@@ -12,20 +12,26 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100vh;
+      min-height: 100vh;
       margin: 0;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
     }
     h1 {
+      margin-top: 10px;
       margin-bottom: 12px;
-      letter-spacing: 2px;
+      letter-spacing: 3px;
       text-transform: uppercase;
       color: #d4af37; /* Mafia gold accent */
+      text-shadow: 0 2px 10px rgba(212, 175, 55, 0.3);
     }
     canvas {
       border: 4px solid #333;
       background-color: #1a1a1a;
       box-shadow: 0px 10px 30px rgba(0, 0, 0, 0.8);
-      image-rendering: pixelated; /* Keeps pixel art crisp */
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
     }
   </style>
 </head>
@@ -34,11 +40,26 @@
   <h1 id="gameTitle">SHOOT</h1>
   <canvas id="gameCanvas" width="1024" height="640"></canvas>
 
-  <!-- External Script Modules -->
-  <script src="players.js"></script>
-  <script src="gamelogic.js"></script>
-  <script src="statkeep.js"></script>
+  <!-- Global Diagnostic Error Listener -->
+  <script>
+    window.gameRuntimeError = null;
+    window.addEventListener('error', function(e) {
+      // Ignore non-fatal missing optional scripts/images so fallback logic takes over smoothly
+      if (e.target && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'IMG')) {
+        const src = e.target.src ? e.target.src.split('/').pop() : 'resource';
+        console.warn(`Optional asset (${src}) not found. Operating with built-in fallbacks.`);
+        return;
+      }
+      
+      const file = e.filename ? e.filename.split('/').pop() : 'script';
+      if (e.message && e.message !== 'Script error.') {
+        window.gameRuntimeError = `${e.message} (${file}:${e.lineno})`;
+      }
+      console.error("Game Error Caught:", e);
+    }, true);
+  </script>
 
+  <!-- Global Variables & Map Matrix Setup -->
   <script>
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
@@ -48,34 +69,9 @@
     const COLS = canvas.width / TILE_SIZE; // 32 columns
     const ROWS = canvas.height / TILE_SIZE; // 20 rows
 
-    // --- GAME STATE & START SCREEN ASSET ---
-    let gameState = 'START_SCREEN'; // 'START_SCREEN' or 'PLAYING'
+    let gameState = 'START_SCREEN'; // 'START_SCREEN', 'PLAYING', 'PAUSED', 'GAME_OVER'
 
-    const startScreenImg = new Image();
-    startScreenImg.src = 'Startscreen.png';
-
-    // Listen for 1 or 5 to start the game
-    window.addEventListener('keydown', (e) => {
-      if (gameState === 'START_SCREEN' && (e.key === '1' || e.code === '5' || e.key === '5')) {
-        gameState = 'PLAYING';
-        
-        // STATKEEP HOOK: Start round telemetry timer
-        if (typeof statKeeper !== 'undefined') {
-          statKeeper.startRound();
-        }
-
-        if (titleElement) {
-          titleElement.textContent = 'Map 01: The Room';
-        }
-      }
-    });
-
-    // Map Matrix:
-    // 0 = Dark Marble Floor
-    // 1 = Outer Steel/Reinforced Wall
-    // 2 = Polish Mahogany Meeting Table
-    // 3 = Concrete Pillar
-    // 4 = Player-Placed Defensive Cover Block
+    // Map Matrix
     const mapTheRoom = [
       [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
       [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
@@ -98,8 +94,94 @@
       [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
       [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
     ];
+    window.mapTheRoom = mapTheRoom;
+  </script>
 
-    // --- PROCEDURAL 32x32 PIXEL ART SPRITES ---
+  <!-- External Script Modules -->
+  <script src="players.js"></script>
+  <script src="statkeep.js"></script>
+  <script src="aiengine.js"></script>
+  <script src="startscreen2.js"></script>
+  <script src="gamelogic.js"></script>
+
+  <!-- Main Engine Execution & Safe Fallbacks -->
+  <script>
+    // Start screen must be created AFTER startscreen2.js has loaded
+    window.startScreen = (typeof StartScreen !== 'undefined') ? new StartScreen(canvas, ctx) : null;
+
+    // 1. Fallback Player Class if players.js hasn't loaded Player
+    if (typeof Player === 'undefined') {
+      window.Player = class Player {
+        constructor(x, y, opts = {}) {
+          this.col = typeof x === 'number' ? x : 5;
+          this.row = typeof y === 'number' ? y : 5;
+          this.x = this.col * TILE_SIZE;
+          this.y = this.row * TILE_SIZE;
+          this.playerNumber = opts.playerNumber || 1;
+          this.isAI = false;
+          this.health = 3;
+          this.lastMoveTime = 0;
+        }
+        update() {}
+        render(context) {
+          context.fillStyle = this.playerNumber === 1 ? '#00ffcc' : '#ff3366';
+          context.fillRect(this.x, this.y, TILE_SIZE, TILE_SIZE);
+        }
+      };
+    }
+
+    // 2. Fallback AI Logic if aiEngine.js is not present
+    if (typeof window.updateAILogic !== 'function') {
+      window.updateAILogic = function() {
+        if (window.player2 && window.player2.isAI && window.player1) {
+          const now = Date.now();
+          if (now - (window.player2.lastMoveTime || 0) > 750) {
+            window.player2.lastMoveTime = now;
+            if (window.player2.col < window.player1.col) window.player2.col++;
+            else if (window.player2.col > window.player1.col) window.player2.col--;
+            else if (window.player2.row < window.player1.row) window.player2.row++;
+            else if (window.player2.row > window.player1.row) window.player2.row--;
+            window.player2.x = window.player2.col * TILE_SIZE;
+            window.player2.y = window.player2.row * TILE_SIZE;
+          }
+        }
+      };
+    }
+
+    const startScreenImg = new Image();
+    startScreenImg.src = 'Startscreen.png';
+
+    // Initialize Players
+    let player1 = null;
+    let player2 = null;
+
+    try {
+      player1 = new Player(1, 1, { playerNumber: 1, spriteSrc: 'playersprite.png' });
+    } catch(e) {
+      player1 = new Player(1, 1, { playerNumber: 1 });
+    }
+
+    try {
+      player2 = new Player(30, 1, { playerNumber: 2, spriteSrc: 'player2sprite.png' });
+    } catch(e) {
+      player2 = new Player(30, 1, { playerNumber: 2 });
+    }
+
+    window.player1 = player1;
+    window.player2 = player2;
+    window.allPlayers = [player1, player2].filter(Boolean);
+
+    // Input Controller for Page Scroll Prevention ONLY
+    window.addEventListener('keydown', (e) => {
+      const keysToBlock = ['1', '2', '5', 'Space', 'Enter', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+      if (keysToBlock.includes(e.key) || keysToBlock.includes(e.code)) {
+        if (e.target === document.body || e.target === canvas) {
+          e.preventDefault();
+        }
+      }
+    });
+
+    // Procedural Tile Textures
     function createTileTexture(type) {
       const c = document.createElement('canvas');
       c.width = 32;
@@ -107,120 +189,35 @@
       const tCtx = c.getContext('2d');
 
       if (type === 0) {
-        // Floor: Dark Marble Tile with Grout Line
-        tCtx.fillStyle = '#141418';
-        tCtx.fillRect(0, 0, 32, 32);
-        
-        // Inner tile highlight
-        tCtx.fillStyle = '#1b1b22';
-        tCtx.fillRect(2, 2, 28, 28);
-
-        // Subtle diagonal marble grain
-        tCtx.fillStyle = '#22222b';
-        tCtx.fillRect(6, 4, 18, 2);
-        tCtx.fillRect(10, 14, 14, 2);
-        tCtx.fillRect(4, 22, 12, 2);
-
-        // Dark Grout lines
-        tCtx.fillStyle = '#0a0a0d';
-        tCtx.fillRect(0, 31, 32, 1);
-        tCtx.fillRect(31, 0, 1, 32);
-      } 
-      else if (type === 1) {
-        // Outer Wall: Steel Plate with Gold Rivets
-        tCtx.fillStyle = '#1e1f24';
-        tCtx.fillRect(0, 0, 32, 32);
-
-        // Outer Bevel
-        tCtx.fillStyle = '#3a3d45';
-        tCtx.fillRect(1, 1, 30, 30);
-        tCtx.fillStyle = '#282a30';
-        tCtx.fillRect(3, 3, 26, 26);
-
-        // Center Panel
-        tCtx.fillStyle = '#1c1d22';
-        tCtx.fillRect(5, 5, 22, 22);
-
-        // Corner Rivets (Mafia Gold)
-        tCtx.fillStyle = '#d4af37';
-        tCtx.fillRect(3, 3, 2, 2);
-        tCtx.fillRect(27, 3, 2, 2);
-        tCtx.fillRect(3, 27, 2, 2);
-        tCtx.fillRect(27, 27, 2, 2);
-      } 
-      else if (type === 2) {
-        // Meeting Table: Polished Mahogany Wood Grain & Brass Trim
-        tCtx.fillStyle = '#4a1c03'; // Deep wood base
-        tCtx.fillRect(0, 0, 32, 32);
-
-        // Wood Planks Highlight
-        tCtx.fillStyle = '#6e2c00';
-        tCtx.fillRect(2, 2, 28, 28);
-
-        // Wood Grain Lines
-        tCtx.fillStyle = '#381300';
-        tCtx.fillRect(2, 8, 28, 2);
-        tCtx.fillRect(2, 18, 28, 2);
-        tCtx.fillRect(2, 26, 28, 2);
-
-        // Polished Light Reflection Line
-        tCtx.fillStyle = '#8a3a03';
-        tCtx.fillRect(4, 3, 24, 2);
-
-        // Brass Table Corner Bracket
-        tCtx.fillStyle = '#b89628';
-        tCtx.fillRect(0, 0, 4, 4);
-        tCtx.fillRect(28, 0, 4, 4);
-        tCtx.fillRect(0, 28, 4, 4);
-        tCtx.fillRect(28, 28, 4, 4);
-      } 
-      else if (type === 3) {
-        // Metallic Pillar: Clean Beveled Steel Block
-        tCtx.fillStyle = '#1c2026'; // Dark outer border
-        tCtx.fillRect(0, 0, 32, 32);
-
-        // Main metallic steel base
-        tCtx.fillStyle = '#525b68';
-        tCtx.fillRect(2, 2, 28, 28);
-
-        // Top & Left metallic sheen highlight
-        tCtx.fillStyle = '#94a2b3';
-        tCtx.fillRect(2, 2, 28, 2);
-        tCtx.fillRect(2, 2, 2, 28);
-
-        // Bottom & Right bevel shadow
-        tCtx.fillStyle = '#2c323b';
-        tCtx.fillRect(2, 28, 28, 2);
-        tCtx.fillRect(28, 2, 2, 28);
-
-        // Clean central metal plate inset
-        tCtx.fillStyle = '#414852';
-        tCtx.fillRect(6, 6, 20, 20);
-
-        // Corner steel bolts
-        tCtx.fillStyle = '#788596';
-        tCtx.fillRect(8, 8, 2, 2);
-        tCtx.fillRect(22, 8, 2, 2);
-        tCtx.fillRect(8, 22, 2, 2);
-        tCtx.fillRect(22, 22, 2, 2);
+        // Dark Marble Floor
+        tCtx.fillStyle = '#141418'; tCtx.fillRect(0, 0, 32, 32);
+        tCtx.fillStyle = '#1b1b22'; tCtx.fillRect(2, 2, 28, 28);
+        tCtx.fillStyle = '#22222b'; tCtx.fillRect(6, 4, 18, 2); tCtx.fillRect(10, 14, 14, 2); tCtx.fillRect(4, 22, 12, 2);
+        tCtx.fillStyle = '#0a0a0d'; tCtx.fillRect(0, 31, 32, 1); tCtx.fillRect(31, 0, 1, 32);
+      } else if (type === 1) {
+        // Outer Steel Wall
+        tCtx.fillStyle = '#1e1f24'; tCtx.fillRect(0, 0, 32, 32);
+        tCtx.fillStyle = '#3a3d45'; tCtx.fillRect(1, 1, 30, 30);
+        tCtx.fillStyle = '#1c1d22'; tCtx.fillRect(5, 5, 22, 22);
+        tCtx.fillStyle = '#d4af37'; tCtx.fillRect(3, 3, 2, 2); tCtx.fillRect(27, 3, 2, 2);
+      } else if (type === 2) {
+        // Mahogany Meeting Table
+        tCtx.fillStyle = '#4a1c03'; tCtx.fillRect(0, 0, 32, 32);
+        tCtx.fillStyle = '#6e2c00'; tCtx.fillRect(2, 2, 28, 28);
+        tCtx.fillStyle = '#b89628'; tCtx.fillRect(0, 0, 4, 4); tCtx.fillRect(28, 0, 4, 4);
+      } else if (type === 3) {
+        // Concrete Pillar
+        tCtx.fillStyle = '#1c2026'; tCtx.fillRect(0, 0, 32, 32);
+        tCtx.fillStyle = '#525b68'; tCtx.fillRect(2, 2, 28, 28);
+        tCtx.fillStyle = '#94a2b3'; tCtx.fillRect(2, 2, 28, 2);
+      } else if (type === 4) {
+        // Defensive Cover Block
+        tCtx.fillStyle = '#1c3d5a'; tCtx.fillRect(0, 0, 32, 32);
+        tCtx.fillStyle = '#2980b9'; tCtx.fillRect(2, 2, 28, 28);
       }
-      else if (type === 4) {
-        // Player-Placed Cover Block
-        tCtx.fillStyle = '#1c3d5a';
-        tCtx.fillRect(0, 0, 32, 32);
-
-        tCtx.fillStyle = '#2980b9';
-        tCtx.fillRect(2, 2, 28, 28);
-
-        tCtx.fillStyle = '#5dedff';
-        tCtx.fillRect(4, 4, 24, 2);
-        tCtx.fillRect(4, 4, 2, 24);
-      }
-
       return c;
     }
 
-    // Pre-render pixel sprites into memory
     const tileSprites = {
       0: createTileTexture(0),
       1: createTileTexture(1),
@@ -234,74 +231,101 @@
         for (let c = 0; c < COLS; c++) {
           const tile = mapTheRoom[r][c];
           const sprite = tileSprites[tile] || tileSprites[0];
-
-          // Draw pixel sprite tile
           ctx.drawImage(sprite, c * TILE_SIZE, r * TILE_SIZE);
         }
       }
     }
 
-    // --- INITIALIZE PLAYERS ---
-    // Player 1 (WASD + Space + Left Shift + E + R)
-    const player1 = new Player(15, 14, {
-      playerNumber: 1,
-      spriteSrc: 'playersprite.png'
-    });
-
-    // Player 2 (Arrows + Enter + Right Control + M + K)
-    const player2 = new Player(5, 5, {
-      playerNumber: 2,
-      spriteSrc: 'player2sprite.png'
-    });
-
-    // --- MAIN GAME LOOP ---
+    // Main Game Loop
     function gameLoop() {
+      if (window.gameRuntimeError) {
+        ctx.fillStyle = '#0f0f11';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#ff4d4d';
+        ctx.font = 'bold 20px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('SCRIPT ERROR DETECTED:', canvas.width / 2, canvas.height / 2 - 30);
+        ctx.font = '16px monospace';
+        ctx.fillText(window.gameRuntimeError, canvas.width / 2, canvas.height / 2 + 10);
+        ctx.fillStyle = '#aaaaaa';
+        ctx.fillText('Check your console or JS files for errors.', canvas.width / 2, canvas.height / 2 + 50);
+        requestAnimationFrame(gameLoop);
+        return;
+      }
+
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      if (gameState === 'START_SCREEN') {
-        // Draw Start Screen image onto canvas
-        if (startScreenImg.complete && startScreenImg.naturalWidth !== 0) {
-          ctx.drawImage(startScreenImg, 0, 0, canvas.width, canvas.height);
-        } else {
-          // Fallback rendering while image is loading
-          ctx.fillStyle = '#0f0f11';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
+      try {
+        if (gameState === 'START_SCREEN' && window.startScreen) {
+          window.startScreen.update();
+          window.startScreen.render();
+
+        } else if (gameState === 'START_SCREEN') {
+          // Fallback only if startscreen2.js failed to load
+          if (startScreenImg.complete && startScreenImg.naturalWidth !== 0) {
+            ctx.drawImage(startScreenImg, 0, 0, canvas.width, canvas.height);
+          } else {
+            ctx.fillStyle = '#0f0f11';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+          }
+
+          // Render Start Screen UI Box & Menu Options
+          ctx.fillStyle = 'rgba(10, 12, 16, 0.85)';
+          ctx.fillRect(canvas.width / 2 - 280, canvas.height / 2 - 120, 560, 240);
+          ctx.strokeStyle = '#d4af37';
+          ctx.lineWidth = 3;
+          ctx.strokeRect(canvas.width / 2 - 280, canvas.height / 2 - 120, 560, 240);
+
           ctx.fillStyle = '#d4af37';
-          ctx.font = '28px "Segoe UI", sans-serif';
+          ctx.font = 'bold 44px "Segoe UI", sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText('PRESS ENTER / SPACE TO START', canvas.width / 2, canvas.height / 2);
+          ctx.fillText('SHOOT', canvas.width / 2, canvas.height / 2 - 50);
+
+          ctx.fillStyle = '#ffffff';
+          ctx.font = '18px "Segoe UI", sans-serif';
+          ctx.fillText('PRESS [1] FOR LOCAL PVP (2 PLAYERS)', canvas.width / 2, canvas.height / 2 + 20);
+          ctx.fillText('PRESS [5] FOR VS AI', canvas.width / 2, canvas.height / 2 + 65);
+
+        } else if (gameState === 'PLAYING') {
+          if (typeof updateAILogic === 'function') {
+            updateAILogic();
+          }
+
+          renderMap();
+
+          if (player1 && typeof player1.update === 'function') player1.update();
+          if (player2 && typeof player2.update === 'function') player2.update();
+
+          if (typeof checkCollisions === 'function') {
+            checkCollisions();
+          }
+
+          if (player1 && typeof player1.render === 'function') player1.render(ctx);
+          if (player2 && typeof player2.render === 'function') player2.render(ctx);
+
+          if (typeof renderHitFlash === 'function') {
+            renderHitFlash(ctx);
+          }
+        } else if (gameState === 'PAUSED') {
+          renderMap();
+          if (player1 && typeof player1.render === 'function') player1.render(ctx);
+          if (player2 && typeof player2.render === 'function') player2.render(ctx);
+          if (typeof renderPauseOverlay === 'function') renderPauseOverlay(ctx);
+        } else if (gameState === 'GAME_OVER') {
+          renderMap();
+          if (player1 && typeof player1.render === 'function') player1.render(ctx);
+          if (player2 && typeof player2.render === 'function') player2.render(ctx);
+          if (typeof renderGameOverOverlay === 'function') {
+            renderGameOverOverlay(ctx);
+          }
         }
-      } else if (gameState === 'PLAYING') {
-        renderMap(); // Draws map & static tiles
-
-        // Update Players
-        player1.update();
-        player2.update();
-
-        // Check Combat Collisions & Win Condition
-        checkCollisions(); // <--- This triggers the hit detection in gamelogic.js
-
-        // Render Players
-        player1.render(ctx);
-        player2.render(ctx);
-
-        // Render Damage Flash Effect
-        renderHitFlash(ctx);
-        
-      } else if (gameState === 'GAME_OVER') {
-        // Keeps the map and players visible under the Game Over overlay
-        renderMap();
-        player1.render(ctx);
-        player2.render(ctx);
-        
-        // Displays the winner text and prompt to restart
-        renderGameOverOverlay(ctx);
+      } catch (err) {
+        window.gameRuntimeError = "Loop Error: " + err.message;
       }
 
       requestAnimationFrame(gameLoop);
     }
 
-    // Start continuous loop
     gameLoop();
   </script>
 </body>
